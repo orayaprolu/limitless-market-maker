@@ -15,5 +15,6 @@ market_data = MarketData(
     no_token="53948619578272912237162925404802617997488075040854895688260903325241067402930"
 )
 
-# print(proxy.execute_trade(0.44, 20, 'YES', 'SELL', market_data))
+print(proxy.place_order(0.44, 20, 'YES', 'SELL', market_data))
+print('done, should wait 5 second now')
 print(proxy.fetch_orderbook(market_data))

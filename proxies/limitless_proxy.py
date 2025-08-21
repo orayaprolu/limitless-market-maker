@@ -9,7 +9,9 @@ import logging
 import json
 from decimal import Decimal
 import math
+import random
 
+from utils.rate_limit import SpacedLimiter
 from utils.string_to_hex import string_to_hex
 from config import (
     LIMITLESS_URL, BASE_RPC, LIMITLESS_CLOB_CFT_ADDRS,
@@ -68,6 +70,7 @@ class LimitlessProxy:
 
     def __init__(self, private_key):
         self._logger = logger.getChild(__class__.__name__)
+        self._limiter = SpacedLimiter(min_interval_s=5)
 
         if not private_key:
             raise ValueError("Private key is required")
@@ -92,6 +95,32 @@ class LimitlessProxy:
 
     def __repr__(self):
         return f"LimitlessProxy(public_key={self._public_key!r})"
+
+    def _gated_request(self, method: str, path: str, **kwargs) -> requests.Response:
+        base = self._api_url.rstrip("/") # removes trailing slash
+        url = f"{base}{path}"
+
+        for attempt in range(4):
+            self._limiter.acquire()  # ensures ≥5s between request starts
+            r = requests.request(method, url, timeout=35, **kwargs)
+            if r.status_code in (429, 500, 502, 503, 504):
+                backoff = min(2 ** attempt, 8) + random.random() * 0.4
+                time.sleep(backoff)
+                continue
+            r.raise_for_status()
+            return r
+
+        # final attempt (surface error if it still fails)
+        self._limiter.acquire()
+        r = requests.request(method, url, timeout=35, **kwargs)
+        r.raise_for_status()
+        return r
+
+    def _gated_get(self, path: str, **kwargs):  return self._gated_request("GET", path, **kwargs)
+
+    def _gated_post(self, path: str, **kwargs): return self._gated_request("POST", path, **kwargs)
+
+    def _gated_delete(self, path: str, **kwargs): return self._gated_request("DELETE", path, **kwargs)
 
     def _ensure_ctf_sell_approval(self, private_key: str):
         public_key = Web3.to_checksum_address(self._account.address)
@@ -137,7 +166,7 @@ class LimitlessProxy:
             self._logger.debug(f"Using cached signing message {self._signed_message_cache}")
             return self._signed_message_cache.message
 
-        r = requests.get(f'{self._api_url}/auth/signing-message')
+        r = self._gated_get('/auth/signing-message')
         if r.status_code != 200:
             raise Exception(f"Failed to get signing message: {r.text}")
         self._signed_message_cache = self.SignedMessage(ts=now, message=r.text)
@@ -161,7 +190,7 @@ class LimitlessProxy:
             'Accept': 'application/json'
         }
         body = {"client": "eoa"}
-        r = requests.post(f'{self._api_url}/auth/login', headers=headers, json=body)
+        r = self._gated_post('/auth/login', headers=headers, json=body)
         if r.status_code != 200:
             raise Exception(f"Authentication failed: {r.status_code} - {r.text}")
         self._logger.debug(f'Logged in successfully: {r.text}')
@@ -242,9 +271,8 @@ class LimitlessProxy:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        api_url = f"{self._api_url}/orders"
         self._logger.info(f"Order payload: {json.dumps(order_payload, indent=2)}")
-        r = requests.post(api_url, headers=headers, json=order_payload, timeout=35)
+        r = self._gated_post('/orders', headers=headers, json=order_payload)
         if r.status_code != 201:
             self._logger.error(f"Failed to create order. Status: {r.status_code}")
             self._logger.error(f"Response: {r.text}")
@@ -253,7 +281,7 @@ class LimitlessProxy:
         self._logger.info(f"Order created successfully: {json.dumps(out, indent=2)}")
         return out
 
-    def execute_trade(
+    def place_order(
         self,
         price_dollars,
         shares,
@@ -266,9 +294,8 @@ class LimitlessProxy:
 
         signing_message = self._get_signing_message()
         session_cookie, user_data = self._login(signing_message)
-        self._logger.info(f"Logged in successfully")
+        self._logger.info("Logged in successfully")
 
-        trade_type = "GTC"
         scaling_factor = 10 ** 6
         token_id = market_data.yes_token if market_type == "YES" else market_data.no_token
 
@@ -314,9 +341,23 @@ class LimitlessProxy:
 
         return self._create_order_api(final_order_payload, session_cookie)
 
+    def cancel_order(self, order_id: str, session_cookie: str) -> bool:
+        headers = {
+            "cookie": f"limitless_session={session_cookie}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        self._logger.info(f"Canceling order with ID {order_id}")
+        r = self._gated_delete(f'/orders/{order_id}', headers=headers)
+        if r.status_code != 200:
+            self._logger.error(f"Failed to cancel order. Status: {r.status_code}")
+            self._logger.error(f"Response: {r.text}")
+            raise Exception(f"API Error {r.status_code}: {r.text}")
+        self._logger.info("Order canceled successfully")
+        return True
+
     def fetch_orderbook(self, market_data: MarketData) -> OrderbookDTO:
-        url = f"{self._api_url}/markets/{market_data.slug}/orderbook"
-        response = requests.get(url)
-        response.raise_for_status()
-        data: OrderbookDTO = response.json()
+        r = self._gated_get(f'/markets/{market_data.slug}/orderbook')
+        r.raise_for_status()
+        data: OrderbookDTO = r.json()
         return data

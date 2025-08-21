@@ -1,16 +1,14 @@
 from dotenv import load_dotenv
-from typing import Literal, Optional, NamedTuple
+from typing import Literal, Optional, NamedTuple, get_args
 from web3 import Web3
 from eth_account import Account
 from eth_account.messages import encode_defunct, encode_typed_data
 import requests
 import time
 import logging
-import os
 import json
 from decimal import Decimal
 import math
-from dataclasses import dataclass
 
 from utils.string_to_hex import string_to_hex
 from config import (
@@ -18,6 +16,14 @@ from config import (
     LIMITLESS_NEGRISK_CFT_ADDRS, LIMITLESS_ERC1155_CFT_ADDRS,
     LIMITLESS_OPERATOR_CTF_ADDRS, BASE_CHAIN_ID
 )
+from models.marketdata import MarketData
+from models.limitless_response_types import (
+    OrderbookDTO,
+    CreateOrderBodyDTO,
+    CreateOrderResponseDTO,
+    OrderDTO
+)
+
 
 load_dotenv()
 
@@ -60,17 +66,15 @@ class LimitlessProxy:
         ts: float
         message: str
 
-    def __init__(self, public_key, private_key):
+    def __init__(self, private_key):
         self._logger = logger.getChild(__class__.__name__)
 
-        if not public_key:
-            raise ValueError("Public key is required")
         if not private_key:
             raise ValueError("Private key is required")
 
-        self._public_key: str = public_key
+        self._account = Account.from_key(private_key)
         self._private_key: str = private_key
-        self._account = Account.from_key(self._private_key)
+        self._public_key: str = self._account.address
         self._api_url: str = LIMITLESS_URL
 
         # Use checksume since Web3 package checks validity of address by verifying if valid checksum
@@ -119,7 +123,7 @@ class LimitlessProxy:
             "chainId": 8453,
         })
         signed = self._w3.eth.account.sign_transaction(tx, private_key)
-        tx_hash = self._w3.eth.send_raw_transaction(signed.rawTransaction)
+        tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
         self._logger.debug(f"Sent transaction for approval of CTF for transfer to operator: {operator}")
         rcpt = self._w3.eth.wait_for_transaction_receipt(tx_hash)
         if rcpt.status != 1: # pyright: ignore
@@ -144,13 +148,15 @@ class LimitlessProxy:
         self._logger.debug(f'Using account {self._account.address}')
 
         signing_message_hash = encode_defunct(text=signing_message)
-        signing_message = string_to_hex(signing_message)
         signature = self._account.sign_message(signing_message_hash).signature.hex()
+        if not signature.startswith("0x"):
+            signature = "0x" + signature
+        signing_message = string_to_hex(signing_message)
 
         headers = {
             'x-account': self._account.address,
             'x-signature': signature,
-            'x-signature-message': signing_message,
+            'x-signing-message': signing_message,
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         }
@@ -163,14 +169,22 @@ class LimitlessProxy:
 
     def _get_eip712_order_domain(self):
         return {
-            'name': 'Limitless',
+            'name': 'Limitless CTF Exchange',
             'version': '1',
             'chainId': self._chain_id,
             'verifyingContract': self._clob_address
         }
 
-    def _create_order_payload_without_signature(self, maker_address, token_id, maker_amount, taker_amount, fee_rate_bps, side):
-        salt = os.urandom(32)
+    def _create_order_payload_without_signature(
+        self,
+        maker_address,
+        token_id,
+        maker_amount,
+        taker_amount,
+        fee_rate_bps,
+        side
+    ) -> OrderDTO :
+        salt = int(time.time() * 1000) + (24 * 60 * 60 * 1000)
         if side == 'BUY':
             side_flag = 0
         elif side == 'SELL':
@@ -198,6 +212,7 @@ class LimitlessProxy:
         msg["tokenId"]    = int(msg["tokenId"])
         msg["expiration"] = int(msg["expiration"])
 
+
         domain = self._get_eip712_order_domain()
 
         try:
@@ -214,8 +229,11 @@ class LimitlessProxy:
                 "message": msg,
             })
 
-        signed = self._account.sign_message(encoded)
+        acct = Account.from_key(self._private_key if self._private_key.startswith("0x") else "0x" + self._private_key)
+        signed = acct.sign_message(encoded)
         sig = signed.signature.hex()
+        if not sig.startswith("0x"):
+            sig = "0x" + sig
         return sig
 
     def _create_order_api(self, order_payload, session_cookie):
@@ -231,12 +249,19 @@ class LimitlessProxy:
             self._logger.error(f"Failed to create order. Status: {r.status_code}")
             self._logger.error(f"Response: {r.text}")
             raise Exception(f"API Error {r.status_code}: {r.text}")
-        out = r.json()
+        out: CreateOrderResponseDTO = r.json()
         self._logger.info(f"Order created successfully: {json.dumps(out, indent=2)}")
         return out
 
-    def _execute_trade(self, price_dollars, shares, market_type, market_data: MarketData, side, slug):
-        if market_type not in self.Market:
+    def execute_trade(
+        self,
+        price_dollars,
+        shares,
+        market_type,
+        side,
+        market_data: MarketData,
+    ) -> CreateOrderResponseDTO:
+        if market_type not in get_args(self.Market):
             raise ValueError("market_type must be 'YES' or 'NO'")
 
         signing_message = self._get_signing_message()
@@ -244,29 +269,28 @@ class LimitlessProxy:
         self._logger.info(f"Logged in successfully")
 
         trade_type = "GTC"
-        scaling_factor = 10 ** 18
+        scaling_factor = 10 ** 6
         token_id = market_data.yes_token if market_type == "YES" else market_data.no_token
 
+        price = Decimal(str(price_dollars))
         fee_bps = int(user_data.get("rank", {}).get("feeRateBps", 0))
         fee = Decimal(fee_bps) / Decimal(10_000.0)
         shares = int(shares)
 
         if side == "BUY":
             contracts_amount = shares * scaling_factor
-            collateral_amount = math.floor(Decimal(price_dollars) * Decimal(contracts_amount))
+            collateral_amount = math.floor(price * Decimal(contracts_amount))
 
             maker_amount = int(collateral_amount)
             taker_amount = int(contracts_amount)
-            side_flag = 0
 
         elif side == "SELL":
             contracts_pre = shares * scaling_factor
             contracts_after = math.floor(Decimal(contracts_pre) * (Decimal(1.0) - fee))
-            collateral_amount = math.floor(Decimal(price_dollars) * Decimal(contracts_after))
+            collateral_amount = math.floor(price * Decimal(contracts_after))
 
             maker_amount = int(contracts_after)
             taker_amount = int(collateral_amount)
-            side_flag = 1
 
         else:
             raise ValueError("side must be 'BUY' or 'SELL'")
@@ -277,15 +301,22 @@ class LimitlessProxy:
             maker_amount=maker_amount,
             taker_amount=taker_amount,
             fee_rate_bps=fee_bps,
-            side=side_flag
+            side=side
         )
         signature = self._create_signature_for_order_payload(unsigned_order)
 
-        final_order_payload = {
+        final_order_payload: CreateOrderBodyDTO = {
             "order": { **unsigned_order, "price": float(price_dollars), "signature": signature },
-            "ownerId": self._account.address,
+            "ownerId": user_data["id"],
             "orderType": "GTC",
-            "marketSlug": slug,
+            "marketSlug": market_data.slug,
         }
 
         return self._create_order_api(final_order_payload, session_cookie)
+
+    def fetch_orderbook(self, market_data: MarketData) -> OrderbookDTO:
+        url = f"{self._api_url}/markets/{market_data.slug}/orderbook"
+        response = requests.get(url)
+        response.raise_for_status()
+        data: OrderbookDTO = response.json()
+        return data

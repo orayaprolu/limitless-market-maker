@@ -14,7 +14,12 @@ market_data = MarketData(
     yes_token="38311112601597115954108731736674165177547667440882981632004232973700477060054",
     no_token="53948619578272912237162925404802617997488075040854895688260903325241067402930"
 )
+# order = proxy.place_order(0.44, 20, 'YES', 'SELL', market_data)
+# id = order['order']['id']
+# print(order, id)
+# print('done, should wait 5 second now')
+# print(proxy.cancel_order(str(id)))
 
-print(proxy.place_order(0.44, 20, 'YES', 'SELL', market_data))
-print('done, should wait 5 second now')
-print(proxy.fetch_orderbook(market_data))
+port = proxy.get_portfolio_history()
+
+print(port)

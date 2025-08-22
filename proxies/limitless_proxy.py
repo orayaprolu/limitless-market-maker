@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from typing import Literal, Optional, NamedTuple, get_args
+from typing import Literal, Optional, NamedTuple, Tuple, get_args
 from web3 import Web3
 from eth_account import Account
 from eth_account.messages import encode_defunct, encode_typed_data
@@ -20,10 +20,9 @@ from config import (
 )
 from models.marketdata import MarketData
 from models.limitless_response_types import (
-    OrderbookDTO,
-    CreateOrderBodyDTO,
-    CreateOrderResponseDTO,
-    OrderDTO
+    OrderbookDTO, CreateOrderBodyDTO,
+    CreateOrderResponseDTO, OrderDTO,
+    PortfolioHistoryDTO, TokensDTO
 )
 
 
@@ -61,8 +60,11 @@ class LimitlessProxy:
          "stateMutability": "view", "type": "function"}
     ]
 
-    Market = Literal["YES", "NO"]
-    Side = Literal["BUY", "SELL"]
+
+    class LoginSession(NamedTuple):
+        ts: float
+        cookie: str
+        user_data: dict
 
     class SignedMessage(NamedTuple):
         ts: float
@@ -92,28 +94,29 @@ class LimitlessProxy:
         self._ensure_ctf_sell_approval(self._private_key)
 
         self._signed_message_cache: Optional[LimitlessProxy.SignedMessage] = None
+        self._login_cache: Optional[LimitlessProxy.LoginSession] = None
 
     def __repr__(self):
         return f"LimitlessProxy(public_key={self._public_key!r})"
 
     def _gated_request(self, method: str, path: str, **kwargs) -> requests.Response:
-        base = self._api_url.rstrip("/") # removes trailing slash
+        base = self._api_url.rstrip("/")
         url = f"{base}{path}"
 
         for attempt in range(4):
-            self._limiter.acquire()  # ensures ≥5s between request starts
+            self._limiter.acquire()
             r = requests.request(method, url, timeout=35, **kwargs)
+
+            # retry only when it's likely transient
             if r.status_code in (429, 500, 502, 503, 504):
                 backoff = min(2 ** attempt, 8) + random.random() * 0.4
                 time.sleep(backoff)
                 continue
-            r.raise_for_status()
+
             return r
 
-        # final attempt (surface error if it still fails)
         self._limiter.acquire()
         r = requests.request(method, url, timeout=35, **kwargs)
-        r.raise_for_status()
         return r
 
     def _gated_get(self, path: str, **kwargs):  return self._gated_request("GET", path, **kwargs)
@@ -170,10 +173,18 @@ class LimitlessProxy:
         if r.status_code != 200:
             raise Exception(f"Failed to get signing message: {r.text}")
         self._signed_message_cache = self.SignedMessage(ts=now, message=r.text)
+        self._login_cache = None # force new login
         self._logger.debug(f'Set signed_message_cache {self._signed_message_cache}')
         return r.text
 
     def _login(self, signing_message: str):
+        now = time.time()
+        max_cache_age = 60
+
+        if self._login_cache and self._login_cache.ts + max_cache_age > now:
+            self._logger.debug("Using cached login session")
+            return self._login_cache.cookie, self._login_cache.user_data
+
         self._logger.debug(f'Using account {self._account.address}')
 
         signing_message_hash = encode_defunct(text=signing_message)
@@ -194,7 +205,14 @@ class LimitlessProxy:
         if r.status_code != 200:
             raise Exception(f"Authentication failed: {r.status_code} - {r.text}")
         self._logger.debug(f'Logged in successfully: {r.text}')
-        return r.cookies.get("limitless_session"), r.json()
+
+        cookie = r.cookies.get("limitless_session")
+        if not cookie:
+            raise Exception("Failed to retrieve session cookie")
+        user_data = r.json()
+        self._login_cache = self.LoginSession(ts=now, cookie=cookie, user_data=user_data)
+
+        return cookie, user_data
 
     def _get_eip712_order_domain(self):
         return {
@@ -283,10 +301,10 @@ class LimitlessProxy:
 
     def place_order(
         self,
-        price_dollars,
-        shares,
-        market_type,
-        side,
+        price_dollars: float,
+        shares: int,
+        market_type: LimitlessProxy.Market,
+        side: LimitlessProxy.Side,
         market_data: MarketData,
     ) -> CreateOrderResponseDTO:
         if market_type not in get_args(self.Market):
@@ -341,23 +359,47 @@ class LimitlessProxy:
 
         return self._create_order_api(final_order_payload, session_cookie)
 
-    def cancel_order(self, order_id: str, session_cookie: str) -> bool:
+    def cancel_order(self, order_id: str) -> bool:
+        signing_message = self._get_signing_message()
+        session_cookie, user_data = self._login(signing_message)
         headers = {
             "cookie": f"limitless_session={session_cookie}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
         }
+
         self._logger.info(f"Canceling order with ID {order_id}")
         r = self._gated_delete(f'/orders/{order_id}', headers=headers)
-        if r.status_code != 200:
-            self._logger.error(f"Failed to cancel order. Status: {r.status_code}")
-            self._logger.error(f"Response: {r.text}")
-            raise Exception(f"API Error {r.status_code}: {r.text}")
-        self._logger.info("Order canceled successfully")
-        return True
+        if r.status_code == 200:
+            self._logger.info("Order canceled successfully")
+            return True
+        elif r.status_code == 400:
+            self._logger.warning(f"Order {order_id} cannot be canceled: {r.text}")
+            return False
+        elif r.status_code == 401:
+            raise Exception("Not authorized to cancel this order")
+        else:
+            r.raise_for_status()
 
-    def fetch_orderbook(self, market_data: MarketData) -> OrderbookDTO:
+        return False
+
+    def get_portfolio_history(self) -> PortfolioHistoryDTO:
+        signing_message = self._get_signing_message()
+        session_cookie, user_data = self._login(signing_message)
+        headers = {
+            "cookie": f"limitless_session={session_cookie}",
+        }
+
+        r = self._gated_get("/portfolio/history", headers=headers)
+        r.raise_for_status()
+        return r.json()
+
+    def get_orderbook(self, market_data: MarketData) -> OrderbookDTO:
         r = self._gated_get(f'/markets/{market_data.slug}/orderbook')
         r.raise_for_status()
         data: OrderbookDTO = r.json()
         return data
+
+    def get_token_ids(self, slug: str) -> TokensDTO:
+        r = self._gated_get(f'/markets/{slug}')
+        r.raise_for_status()
+        tokens: TokensDTO = r.json()['tokens']
+        return tokens

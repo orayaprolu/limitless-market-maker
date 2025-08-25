@@ -60,6 +60,8 @@ class LimitlessProxy:
          "stateMutability": "view", "type": "function"}
     ]
 
+    Market = Literal["YES", "NO"]
+    Side = Literal["BUY", "SELL"]
 
     class LoginSession(NamedTuple):
         ts: float
@@ -303,8 +305,8 @@ class LimitlessProxy:
         self,
         price_dollars: float,
         shares: int,
-        market_type: LimitlessProxy.Market,
-        side: LimitlessProxy.Side,
+        market_type: Market,
+        side: Side,
         market_data: MarketData,
     ) -> CreateOrderResponseDTO:
         if market_type not in get_args(self.Market):
@@ -381,14 +383,14 @@ class LimitlessProxy:
 
         return False
 
-    def get_portfolio_history(self) -> PortfolioHistoryDTO:
+    def get_portfolio_history(self):
         signing_message = self._get_signing_message()
         session_cookie, user_data = self._login(signing_message)
         headers = {
             "cookie": f"limitless_session={session_cookie}",
         }
 
-        r = self._gated_get("/portfolio/history", headers=headers)
+        r = self._gated_get("/portfolio/positions", headers=headers)
         r.raise_for_status()
         return r.json()
 

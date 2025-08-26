@@ -9,6 +9,4 @@ def trading_loop(slugs: list[str]):
 
     while True:
         for slug in slugs:
-
-            # Run the DataStream for that market
-            # Replace the orders for that market
+            pass

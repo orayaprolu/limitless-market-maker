@@ -126,3 +126,11 @@ class LimitlessClient:
     def cancel_orders(self, order_ids: list[str]):
         for order_id in order_ids:
             self._proxy.cancel_order(order_id)
+
+    # THIS ONLY RETURNS 0.03 RIGHT NOW !
+    def get_max_half_spread(self):
+        return 0.03
+
+    # THIS ONLY RETURNS 0.001 RIGHT NOW !
+    def get_tick_size(self):
+        return 0.001

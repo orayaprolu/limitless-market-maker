@@ -98,7 +98,7 @@ class LimitlessClient:
         else:
             raise ValueError("No orderbook data returned in response")
 
-    def get_position(self, market_data: MarketData):
+    def get_shares(self, market_data: MarketData):
         port_json = self._proxy.get_portfolio_history()
 
         try:
@@ -111,7 +111,7 @@ class LimitlessClient:
             None
         )
         if market is None:
-            raise ValueError("No position found for slug: " + market_data.slug)
+            return 0, 0
 
         decimal_amount = 10 ** 6
 

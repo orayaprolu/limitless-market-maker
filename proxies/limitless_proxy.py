@@ -74,7 +74,7 @@ class LimitlessProxy:
 
     def __init__(self, private_key):
         self._logger = logger.getChild(__class__.__name__)
-        self._limiter = SpacedLimiter(min_interval_s=5)
+        self._limiter = SpacedLimiter(min_interval_s=3)
 
         if not private_key:
             raise ValueError("Private key is required")

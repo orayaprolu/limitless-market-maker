@@ -2,6 +2,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
+from datetime import datetime
 
 
 @dataclass
@@ -36,7 +37,7 @@ class DeribitDatastream:
         upper_instrument_earlier: str,
         lower_instrument_later: str,
         upper_instrument_later: str,
-        target_strike: float,
+        target_instrument: str,
         poll_interval: float = 2.0,
         testnet: bool = False,
         timeout: int = 10
@@ -45,7 +46,9 @@ class DeribitDatastream:
         self.upper_instrument_earlier = upper_instrument_earlier
         self.lower_instrument_later = lower_instrument_later
         self.upper_instrument_later = upper_instrument_later
-        self.target_strike = float(target_strike)
+
+        # Parse target instrument to get strike and expiration
+        self.target_strike, self.target_expiration = self._parse_target_instrument(target_instrument)
 
         self._interval = max(0.5, float(poll_interval))
         self._stop = threading.Event()
@@ -176,7 +179,7 @@ class DeribitDatastream:
 
         # Interpolate between expiration times
         final_price = self._interpolate_time_price(
-            price_earlier, price_later, t_earlier, t_later
+            price_earlier, price_later, t_earlier, t_later, self.target_expiration
         )
 
         return DeribitBinarySnapshot(
@@ -190,6 +193,63 @@ class DeribitDatastream:
             upper_price=p_upper_earlier,
             target_price=final_price,
         )
+
+    def _parse_target_instrument(self, instrument: str) -> Tuple[float, float]:
+        """Parse Deribit instrument string to extract strike and expiration time.
+
+        Format: BTC-1SEP25-110795-C
+        Returns: (strike_price, time_to_expiration_in_years)
+        """
+        try:
+            parts = instrument.split('-')
+            if len(parts) != 4:
+                raise ValueError(f"Invalid instrument format: {instrument}")
+
+            # Extract strike price
+            strike = float(parts[2])
+
+            # Extract and parse expiration date
+            date_str = parts[1]  # e.g., "1SEP25"
+
+            # Parse the date format (e.g., "1SEP25")
+            day = ""
+            month_str = ""
+            year = ""
+
+            # Extract day (1-2 digits at start)
+            i = 0
+            while i < len(date_str) and date_str[i].isdigit():
+                day += date_str[i]
+                i += 1
+
+            # Extract month (3 letters)
+            month_str = date_str[i:i+3]
+
+            # Extract year (2 digits)
+            year = "20" + date_str[i+3:]
+
+            # Convert month abbreviation to number
+            month_map = {
+                'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+                'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
+            }
+
+            month = month_map.get(month_str.upper())
+            if month is None:
+                raise ValueError(f"Invalid month: {month_str}")
+
+            # Create expiration datetime
+            exp_date = datetime(int(year), month, int(day))
+
+            # Calculate time to expiration in years
+            now = datetime.now()
+            time_diff = (exp_date - now).total_seconds()
+            time_to_exp_years = time_diff / (365.25 * 24 * 3600)  # Convert to years
+
+            return strike, max(0.0, time_to_exp_years)
+
+        except Exception as e:
+            raise ValueError(f"Failed to parse instrument {instrument}: {e}")
 
     def _interpolate_strike_price(
         self,
@@ -210,13 +270,13 @@ class DeribitDatastream:
         price_earlier: float,
         price_later: float,
         t_earlier: float,
-        t_later: float
+        t_later: float,
+        target_time: float
     ) -> float:
         """Interpolate price between two expiration times"""
         if t_earlier == t_later:
             return (price_earlier + price_later) / 2
 
-        target_time = (t_earlier + t_later) / 2
         time_slope = (price_later - price_earlier) / (t_later - t_earlier)
         return price_earlier + time_slope * (target_time - t_earlier)
 

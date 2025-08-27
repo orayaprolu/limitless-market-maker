@@ -20,7 +20,7 @@ class LimitlessDatastream:
         self.no_best_bid = None
         self.no_best_ask = None
 
-    def _update_bba(self):
+    def update_bba(self):
         bba = self._client.get_bba(self.market_data)
         self.yes_best_bid = bba.yes_best_bid
         self.yes_best_ask = bba.yes_best_ask
@@ -28,5 +28,5 @@ class LimitlessDatastream:
         self.no_best_ask = bba.no_best_ask
 
     def get_bba(self):
-        self._update_bba()
+        self.update_bba()
         return BBA(self.yes_best_bid, self.yes_best_ask, self.no_best_bid, self.no_best_ask)

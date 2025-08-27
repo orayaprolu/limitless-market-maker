@@ -84,7 +84,7 @@ class DeribitDatastream:
         if self._thread:
             self._thread.join(timeout=2)
 
-    def _update_prices(self) -> None:
+    def update_prices(self) -> None:
         """Update internal price state (similar to LimitlessDatastream._update_bba)"""
         snapshot = self._fetch_snapshot()
         if snapshot:
@@ -98,19 +98,19 @@ class DeribitDatastream:
 
     def get_snapshot(self) -> Optional[DeribitBinarySnapshot]:
         """Get current binary option snapshot (similar to LimitlessDatastream.get_bba)"""
-        self._update_prices()
+        self.update_prices()
         return self._last_snapshot
 
     def get_target_price(self) -> Optional[float]:
         """Get the current interpolated target price"""
-        self._update_prices()
+        self.update_prices()
         return self.target_price
 
     def _run(self) -> None:
         """Main polling loop"""
         while not self._stop.is_set():
             try:
-                self._update_prices()
+                self.update_prices()
             except Exception:
                 pass  # Continue polling on errors
             finally:

@@ -13,8 +13,8 @@ class LimitlessClient:
     Market = Literal["YES", "NO"]
     Side = Literal["BUY", "SELL"]
 
-    def __init__(self, private_key: str):
-        self._proxy = LimitlessProxy(private_key)
+    def __init__(self, private_key: str, proxy: LimitlessProxy):
+        self._proxy = proxy
 
     def get_market_data(self, slug: str):
         if not slug:

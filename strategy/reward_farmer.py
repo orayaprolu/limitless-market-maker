@@ -2,6 +2,7 @@ from decimal import Decimal
 import logging
 import math
 import time
+from typing import Literal
 
 from models.marketdata import MarketData
 from clients.limitless_client import LimitlessClient
@@ -12,6 +13,8 @@ from utils.snap import safe_snap_up, safe_snap_down
 logger = logging.getLogger(__name__)
 
 class RewardFarmer:
+    Market = Literal["YES", "NO"]
+
     def __init__(
         self,
         client: LimitlessClient,
@@ -85,7 +88,16 @@ class RewardFarmer:
         current_bid: Decimal,
         true_lower_bound: Decimal,
         spread: Decimal,
+        market: Market
     ):
+        if market == 'YES':
+            prev_bid = self._prev_yes_bid
+        elif market == 'NO':
+            prev_bid = self._prev_no_bid
+        else:
+            raise ValueError(f"Invalid market: {market}")
+
+
         # If current bid is below target_bid, set order at target_bid
         if current_bid < target_bid:
             bid = target_bid
@@ -94,10 +106,17 @@ class RewardFarmer:
         elif current_bid + self._tick_size > max_bid:
             bid = max_bid
             self._logger.debug(f"Current bid {current_bid} above max {max_bid}, setting to max")
-        # Otherwise set order 1 tick above current bid
-        else:
+        # If we have active orders, never outbid ourselves
+        elif self._orders:
+            bid = current_bid
+            self._logger.debug(f"Active orders exist, maintaining current bid {current_bid}")
+        # Only increase bid if the market has moved up and we don't have orders
+        elif prev_bid != current_bid and current_bid > prev_bid:
             bid = current_bid + self._tick_size
-            self._logger.debug(f"Setting bid 1 tick above current: {current_bid} -> {bid}")
+            self._logger.debug(f"Market bid increased from {prev_bid} to {current_bid}, setting to {bid}")
+        else:
+            bid = current_bid
+            self._logger.debug(f"Maintaining current bid {current_bid}")
 
         # if the spread is too small, make sure bid is at least the minimum
         if spread < self._max_half_spread * 2:
@@ -172,6 +191,7 @@ class RewardFarmer:
         return yes_bid, no_bid
 
     def _find_order_prices(self) -> tuple[Decimal, Decimal]:
+        global cur_bba  # Make cur_bba available to the trading loop
         cur_bba = self._limitless_datastream.get_bba()
         cur_yes_bid = Decimal(cur_bba.yes_best_bid)
         cur_yes_ask = Decimal(cur_bba.yes_best_ask)
@@ -201,14 +221,16 @@ class RewardFarmer:
             max_bid=max_yes_bid,
             current_bid=cur_yes_bid,
             true_lower_bound=true_lower_band,
-            spread=spread
+            spread=spread,
+            market='YES'
         )
         no_bid = self._calculate_competitive_bid(
             target_bid=target_no_bid,
             max_bid=max_no_bid,
             current_bid=cur_no_bid,
             true_lower_bound=Decimal('1') - true_upper_band,
-            spread=spread
+            spread=spread,
+            market='NO'
         )
 
         yes_bid, no_bid = self._adjust_bids_for_inventory_difference(
@@ -289,39 +311,41 @@ class RewardFarmer:
 
     def trading_loop(self):
         self._logger.info("Starting trading loop")
-        while True:
-            try:
-                yes_bid, no_bid = self._find_order_prices()
-                if yes_bid <= 0.02 or yes_bid >= 0.95 or no_bid <= 0.02 or no_bid >= 0.95:
-                    self._logger.warning(f"Prices out of bounds - Yes: {yes_bid:.3f}, No: {no_bid:.3f}. Stopping.")
-                    self._cancel_orders()
-                    # TODO: Make it sell off instead of just breaking
-                    return
+        try:
+            yes_bid, no_bid = self._find_order_prices()
+            if yes_bid <= 0.02 or yes_bid >= 0.95 or no_bid <= 0.02 or no_bid >= 0.95:
+                self._logger.warning(f"Prices out of bounds - Yes: {yes_bid:.3f}, No: {no_bid:.3f}. Stopping.")
+                self._cancel_orders()
+                # TODO: Make it sell off instead of just breaking
+                return
 
-                filled_order = self._client.check_orders_filled(self._orders)
+            filled_order = self._client.check_orders_filled(self._orders)
 
-                if not self._orders:
-                    self._logger.info("No active orders, placing new orders")
-                    self._place_orders(yes_bid, no_bid)
-                elif filled_order:
-                    self._logger.info(f"Orders filled: {filled_order}")
-                    self._cancel_orders()
-                elif (
-                    abs(yes_bid - self._prev_yes_bid) >= self._tick_size
-                    or abs(no_bid - self._prev_no_bid) >= self._tick_size
-                ):
-                    self._logger.info(
-                        f"Price change detected - "
-                        f"Yes: {self._prev_yes_bid:.3f} -> {yes_bid:.3f}, "
-                        f"No: {self._prev_no_bid:.3f} -> {no_bid:.3f}"
-                    )
-                    self._cancel_orders()
-                    self._place_orders(yes_bid, no_bid)
+            if not self._orders:
+                self._logger.info("No active orders, placing new orders")
+                self._place_orders(yes_bid, no_bid)
+            elif filled_order:
+                self._logger.info(f"Orders filled: {filled_order}")
+                self._cancel_orders()
+            elif (
+                # Only replace orders if the price difference is significant
+                # AND not just our own order getting filled
+                (abs(yes_bid - self._prev_yes_bid) > self._tick_size * 2 and not self._orders)
+                or
+                (abs(no_bid - self._prev_no_bid) > self._tick_size * 2 and not self._orders)
+            ):
+                self._logger.info(
+                    f"Price change detected - "
+                    f"Yes: {self._prev_yes_bid:.3f} -> {yes_bid:.3f}, "
+                    f"No: {self._prev_no_bid:.3f} -> {no_bid:.3f}"
+                )
+                self._cancel_orders()
+                self._place_orders(yes_bid, no_bid)
 
-                self._prev_yes_bid = yes_bid
-                self._prev_no_bid = no_bid
+            self._prev_yes_bid = yes_bid
+            self._prev_no_bid = no_bid
 
-                time.sleep(3)
-            except Exception as e:
-                self._logger.error(f"Error in trading loop: {e}", exc_info=True)
-                time.sleep(5)  # Wait a bit longer on error before retrying
+            time.sleep(3)
+        except Exception as e:
+            self._logger.error(f"Error in trading loop: {e}", exc_info=True)
+            time.sleep(5)  # Wait a bit longer on error before retrying

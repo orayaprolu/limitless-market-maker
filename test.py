@@ -9,6 +9,12 @@ from eth_account import Account
 import os
 from pprint import pprint
 import time
+import logging
+
+# Set up logging to only show strategy engine logs
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Set strategy logger to DEBUG level
+logging.getLogger('strategy.reward_farmer').setLevel(logging.DEBUG)
 
 load_dotenv()
 account = Account.from_key(os.getenv("PRIVATE_KEY"))
@@ -16,7 +22,7 @@ private_key = os.getenv('PRIVATE_KEY') or ""
 
 client = LimitlessClient(private_key)
 market_data = client.get_market_data("dollarbtc-above-dollar10729842-on-sep-1-1000-utc-1756116049862")
-datastream = LimitlessDatastream(client, market_data)
+limitless_datastream = LimitlessDatastream(client, market_data)
 deribit_datastream = DeribitDatastream(
     lower_instrument_earlier='BTC-29AUG25-106000-C',
     upper_instrument_later='BTC-29AUG25-108000-C',
@@ -24,17 +30,24 @@ deribit_datastream = DeribitDatastream(
     upper_instrument_earlier='BTC-5SEP25-108000-C',
     target_instrument="BTC-1SEP25-107298-C"
 )
-strategy = RewardFarmer(client, datastream, deribit_datastream, 10, market_data)
+strategy = RewardFarmer(client, limitless_datastream, deribit_datastream, 50, market_data)
 
 while True:
+    deribit_datastream._update_prices()
+    print('updated deribit_datastream')
+    limitless_datastream._update_bba()
+    print('updated limitless_datastream')
+    strategy.trading_loop()
+    print('finished trading loop')
+
     # bba = datastream.get_bba()
     # target_price = deribit_datastream.get_target_price()
     # print(bba)
     # print(target_price)
     # time.sleep(3)
 
-    prices = strategy._find_order_prices()
-    print(prices)
+    # prices = strategy._find_order_prices()
+    # print(prices)
     # time.sleep(3)
 
 

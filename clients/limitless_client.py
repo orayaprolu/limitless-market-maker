@@ -1,5 +1,6 @@
-from typing import Literal
+from typing import Literal, List
 import math
+import time
 from decimal import Decimal
 
 from proxies.limitless_proxy import LimitlessProxy
@@ -26,6 +27,7 @@ class LimitlessClient:
         return market_data
 
     def buy_yes(self, price_dollars: float, usd_amount: float, market_data: MarketData):
+        price_dollars = round(price_dollars, 3)
         shares = math.floor(usd_amount / price_dollars)
         order = self._proxy.place_order(
             price_dollars=price_dollars,
@@ -41,6 +43,7 @@ class LimitlessClient:
             raise ValueError("No order returned in response")
 
     def buy_no(self, price_dollars: float, usd_amount: float, market_data: MarketData):
+        price_dollars = round(price_dollars, 3)
         shares = math.floor(usd_amount / price_dollars)
         order = self._proxy.place_order(
             price_dollars=price_dollars,
@@ -56,6 +59,7 @@ class LimitlessClient:
             raise ValueError("No order returned in response")
 
     def sell_yes(self, price_dollars: float, shares: int, market_data: MarketData):
+        price_dollars = round(price_dollars, 3)
         order = self._proxy.place_order(
             price_dollars=price_dollars,
             shares=shares,
@@ -70,6 +74,7 @@ class LimitlessClient:
             raise ValueError("No order returned in response")
 
     def sell_no(self, price_dollars: float, shares: int, market_data: MarketData):
+        price_dollars = round(price_dollars, 3)
         order = self._proxy.place_order(
             price_dollars=price_dollars,
             shares=shares,
@@ -121,11 +126,17 @@ class LimitlessClient:
         return yes_shares, no_shares
 
     def cancel_order(self, order_id: str):
+        if not order_id:
+            return
         return self._proxy.cancel_order(order_id)
 
     def cancel_orders(self, order_ids: list[str]):
+        if not order_ids:
+            return
+        ret = []
         for order_id in order_ids:
-            self._proxy.cancel_order(order_id)
+            ret.append(self._proxy.cancel_order(order_id))
+        return ret
 
     # THIS ONLY RETURNS 0.03 RIGHT NOW !
     def get_max_half_spread(self):
@@ -134,3 +145,20 @@ class LimitlessClient:
     # THIS ONLY RETURNS 0.001 RIGHT NOW !
     def get_tick_size(self):
         return 0.001
+
+    def check_orders_filled(self, order_ids: List[str]) -> List[str]:
+        """Check if any orders have been filled - returns list of filled order IDs"""
+        if not order_ids:
+            return []
+
+        filled_orders = []
+
+        for order_id in order_ids:
+            order_data = self._proxy.check_order_filled(order_id)
+            if order_data is not None:
+                filled_orders.append(order_id)
+
+            # Add small delay between order checks
+            time.sleep(0.5)
+
+        return filled_orders

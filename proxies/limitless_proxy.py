@@ -383,6 +383,35 @@ class LimitlessProxy:
 
         return False
 
+    def check_order_filled(self, order_id: str) -> Optional[dict]:
+        """Check if a specific order has been filled. Returns order data if filled, None otherwise."""
+        signing_message = self._get_signing_message()
+        session_cookie, user_data = self._login(signing_message)
+        headers = {
+            "cookie": f"limitless_session={session_cookie}",
+        }
+
+        try:
+            r = self._gated_get(f'/orders/{order_id}', headers=headers)
+
+            if r.status_code == 200:
+                order_data = r.json()
+                status = order_data.get("status", "").lower()
+
+                # Check if order is filled
+                if status == "filled":
+                    return order_data
+                # Or if remaining quantity is exactly 0 AND status is not "open"
+                elif order_data.get("remainingQuantity") == 0 and status != "open":
+                    return order_data
+
+            # Return None for 404s, auth errors, or unfilled orders
+            return None
+
+        except Exception as e:
+            self._logger.warning(f"Failed to check order {order_id}: {e}")
+            return None
+
     def get_portfolio_history(self):
         signing_message = self._get_signing_message()
         session_cookie, user_data = self._login(signing_message)

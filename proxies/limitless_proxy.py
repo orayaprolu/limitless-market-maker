@@ -13,7 +13,7 @@ import random
 
 from utils.rate_limit import SpacedLimiter
 from utils.string_to_hex import string_to_hex
-from config import (
+from models.constants import (
     LIMITLESS_URL, BASE_RPC, LIMITLESS_CLOB_CFT_ADDRS,
     LIMITLESS_NEGRISK_CFT_ADDRS, LIMITLESS_ERC1155_CFT_ADDRS,
     LIMITLESS_OPERATOR_CTF_ADDRS, BASE_CHAIN_ID

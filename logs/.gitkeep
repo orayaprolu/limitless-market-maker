@@ -1,0 +1,3 @@
+# This file ensures the logs directory is tracked in version control
+# while keeping it empty by default. Log files are ignored by .gitignore
+# but the directory structure is preserved for the application.

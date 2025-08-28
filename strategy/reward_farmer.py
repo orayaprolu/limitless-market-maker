@@ -21,9 +21,10 @@ class RewardFarmer:
         limitless_datastream: LimitlessDatastream,
         deribit_datastream: DeribitDatastream,
         order_amount_usd: float,
-        market_data: MarketData
+        market_data: MarketData,
+        custom_logger = None
     ):
-        self._logger = logger
+        self._logger = custom_logger if custom_logger is not None else logger
 
         self._client = client
         self._market_data = market_data
@@ -286,14 +287,14 @@ class RewardFarmer:
         order_yes_bid = float(yes_bid)
         order_no_bid = float(no_bid)
 
-        if not sold_yes:
+        if not sold_no:
             self._logger.info(f"Buying YES: ${float(self._order_amount_usd):.2f} @ ${order_yes_bid:.3f}")
             order_id = self._client.buy_yes(
                 order_yes_bid, float(self._order_amount_usd), self._market_data
             )
             self._orders.append(order_id)
             self._logger.debug(f"YES buy order placed with ID: {order_id}")
-        if not sold_no:
+        if not sold_yes:
             self._logger.info(f"Buying NO: ${float(self._order_amount_usd):.2f} @ ${order_no_bid:.3f}")
             order_id = self._client.buy_no(
                 order_no_bid, float(self._order_amount_usd), self._market_data

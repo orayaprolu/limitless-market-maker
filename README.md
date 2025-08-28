@@ -5,7 +5,7 @@ A sophisticated **algorithmic trading platform** built for Limitless Exchange th
 
 ## 🎥 Live Demo
 
-[![Demo Video]](https://youtu.be/ANddlAX7ZrI)
+[Demo Video](https://youtu.be/ANddlAX7ZrI)
 
 ---
 

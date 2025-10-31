@@ -55,6 +55,6 @@ STRATEGY_LOG_LEVEL=DEBUG                 # Strategy-specific logs
 ---
 
 **Professional Links:**
-- 💼 **LinkedIn**: [linkedin.com/in/ojas](https://linkedin.com/in/ojas-rayaprolu)
-- 🔗 **GitHub**: [github.com/ojaskrishna](https://github.com/orayaprolu)
-- 🐦 **Twitter/X**: [twitter.com/ojastrades](https://x.com/orayaprolu)
+- 💼 **LinkedIn**: [linkedin.com/in/ojas-rayaprolu](https://linkedin.com/in/ojas-rayaprolu)
+- 🔗 **GitHub**: [github.com/orayaprolu](https://github.com/orayaprolu)
+- 🐦 **Twitter/X**: [twitter.com/orayaprolu](https://x.com/orayaprolu)
